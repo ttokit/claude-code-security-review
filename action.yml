@@ -1,332 +1,174 @@
-name: 'Claude Code Security Reviewer'
-description: 'AI-powered security review GitHub Action using Claude to analyze code changes for security vulnerabilities'
+name: 'Claude Code Security Review'
+description: 'AI-powered security review using Claude Code with OAuth authentication'
 author: 'Anthropic'
 
 inputs:
-  comment-pr:
-    description: 'Whether to comment on PRs with findings'
-    required: false
-    default: 'true'
-  
-  upload-results:
-    description: 'Whether to upload results as artifacts'
-    required: false
-    default: 'true'
-  
-  exclude-directories:
-    description: 'Comma-separated list of directories to exclude from scanning'
-    required: false
-    default: ''
-
-  claudecode-timeout:
-    description: 'Timeout for ClaudeCode analysis in minutes'
-    required: false
-    default: '20'
-  
-  claude-api-key:
-    description: 'Anthropic Claude API key for security analysis'
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token from GitHub secrets'
     required: true
-    default: ''
-
-  claude-model:
-    description: 'Claude model to use for security analysis (e.g., claude-sonnet-4-20250514)'
+  model:
+    description: 'Claude model to use (default: claude-opus-4-5-20251101)'
     required: false
-    default: ''
-
-  run-every-commit:
-    description: 'Run ClaudeCode on every commit (skips cache check). Warning: This may lead to more false positives on PRs with many commits as the AI analyzes the same code multiple times.'
-    required: false
-    default: 'false'
-
-  false-positive-filtering-instructions:
-    description: 'Path to custom false positive filtering instructions text file'
-    required: false
-    default: ''
-
-  custom-security-scan-instructions:
-    description: 'Path to custom security scan instructions text file to append to audit prompt'
-    required: false
-    default: ''
-
-outputs:
-  findings-count:
-    description: 'Number of security findings'
-    value: ${{ steps.claudecode-scan.outputs.findings_count }}
-  
-  results-file:
-    description: 'Path to the results JSON file'
-    value: ${{ steps.claudecode-scan.outputs.results_file }}
+    default: 'claude-opus-4-5-20251101'
 
 runs:
   using: 'composite'
   steps:
-    - name: Install GitHub CLI
-      shell: bash
-      run: |
-        echo "::group::Install gh CLI"
-        # Install GitHub CLI for PR operations
-        sudo apt-get update && sudo apt-get install -y gh
-        echo "::endgroup::"
-    
-    - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0 pinned to commit hash
+    - name: Run Claude Code Security Review
+      uses: anthropics/claude-code-action@v1
       with:
-        python-version: '3.x'
-    
-    - name: Check ClaudeCode run history
-      id: claudecode-history
-      if: github.event_name == 'pull_request'
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 pinned to commit hash
-      with:
-        path: .claudecode-marker
-        key: claudecode-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
-        restore-keys: |
-          claudecode-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-
-    
-    - name: Determine ClaudeCode enablement
-      id: claudecode-check
-      shell: bash
-      env:
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        RUN_EVERY_COMMIT: ${{ inputs.run-every-commit }}
-      run: |
-        # Check if ClaudeCode should be enabled
-        ENABLE_CLAUDECODE="true"
-        SILENCE_CLAUDECODE_COMMENTS="false"
-        
-        # For PRs, check sampling and cache
-        if [ "${{ github.event_name }}" == "pull_request" ]; then
-          PR_NUMBER="$PR_NUMBER"
-          CACHE_HIT="${{ steps.claudecode-history.outputs.cache-hit }}"
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        allowed_tools: "mcp__github__create_pull_request_review_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Read,Glob,Grep,LS,Task"
+        prompt: |
+          REPO: ${{ github.repository }}
+          PR NUMBER: ${{ github.event.pull_request.number }}
 
-          # Now check cache - if ClaudeCode has already run, disable unless run-every-commit is true
-          # Check if marker file exists (cache may have been restored from a different SHA)
-          if [ "$RUN_EVERY_COMMIT" != "true" ] && [ -f ".claudecode-marker/marker.json" ]; then
-            echo "ClaudeCode has already run on PR #$PR_NUMBER (found marker file), forcing disable to avoid false positives"
-            ENABLE_CLAUDECODE="false"
-          elif [ "$RUN_EVERY_COMMIT" == "true" ] && [ -f ".claudecode-marker/marker.json" ]; then
-            echo "ClaudeCode has already run on PR #$PR_NUMBER but run-every-commit is enabled, running again"
-          elif [ "$ENABLE_CLAUDECODE" == "true" ]; then
-            echo "ClaudeCode will run for PR #$PR_NUMBER (first run)"
-          fi
-        fi
-        
-        echo "enable_claudecode=$ENABLE_CLAUDECODE" >> $GITHUB_OUTPUT
-        echo "silence_claudecode_comments=$SILENCE_CLAUDECODE_COMMENTS" >> $GITHUB_OUTPUT
-        
-        if [ "$ENABLE_CLAUDECODE" == "true" ]; then
-          echo "ClaudeCode is enabled for this run"
-        else
-          echo "ClaudeCode is disabled for this run"
-        fi
-    
-    - name: Reserve ClaudeCode slot to prevent race conditions
-      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && github.event_name == 'pull_request'
-      shell: bash
-      env:
-        REPOSITORY_ID: ${{ github.repository_id }}
-        REPOSITORY: ${{ github.repository }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        SHA: ${{ github.sha }}
-        RUN_ID: ${{ github.run_id }}
-        RUN_NUMBER: ${{ github.run_number }}
-      run: |
-        # Create a reservation marker immediately to prevent other concurrent runs
-        mkdir -p .claudecode-marker
-        cat > .claudecode-marker/marker.json << EOF
-        {
-          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-          "repository_id": "$REPOSITORY_ID",
-          "repository": "$REPOSITORY",
-          "pr_number": $PR_NUMBER,
-          "sha": "$SHA",
-          "status": "reserved",
-          "run_id": "$RUN_ID",
-          "run_number": "$RUN_NUMBER"
-        }
-        EOF
-        echo "Created ClaudeCode reservation marker for PR #$PR_NUMBER"
-    
-    - name: Save ClaudeCode reservation to cache
-      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && github.event_name == 'pull_request'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 pinned to commit hash
-      with:
-        path: .claudecode-marker
-        key: claudecode-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
-    
-    - name: Set up Node.js
-      if: steps.claudecode-check.outputs.enable_claudecode == 'true'
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 pinned to commit hash
-      with:
-        node-version: '18'
-    
-    - name: Install dependencies
-      shell: bash
-      env:
-        ACTION_PATH: ${{ github.action_path }}
-      run: |
-        echo "::group::Install Deps"
-        if [ "${{ steps.claudecode-check.outputs.enable_claudecode }}" == "true" ]; then
-          pip install -r "$ACTION_PATH/claudecode/requirements.txt"
-          npm install -g @anthropic-ai/claude-code
-        fi
-        sudo apt-get update && sudo apt-get install -y jq
-        echo "::endgroup::"
-    
-    - name: Run ClaudeCode scan
-      id: claudecode-scan
-      if: steps.claudecode-check.outputs.enable_claudecode == 'true'
-      shell: bash
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        ANTHROPIC_API_KEY: ${{ inputs.claude-api-key }}
-        ENABLE_CLAUDE_FILTERING: 'true' 
-        EXCLUDE_DIRECTORIES: ${{ inputs.exclude-directories }}
-        FALSE_POSITIVE_FILTERING_INSTRUCTIONS: ${{ inputs.false-positive-filtering-instructions }}
-        CUSTOM_SECURITY_SCAN_INSTRUCTIONS: ${{ inputs.custom-security-scan-instructions }}
-        CLAUDE_MODEL: ${{ inputs.claude-model }}
-        CLAUDECODE_TIMEOUT: ${{ inputs.claudecode-timeout }}
-        ACTION_PATH: ${{ github.action_path }}
-      run: |
-        echo "Running ClaudeCode AI security analysis..."
-        echo "----------------------------------------"
-        
-        # Initialize outputs
-        echo "findings_count=0" >> $GITHUB_OUTPUT
-        echo "results_file=claudecode/claudecode-results.json" >> $GITHUB_OUTPUT
-        
-        # Skip ClaudeCode if not a PR
-        if [ "${{ github.event_name }}" != "pull_request" ]; then
-          echo "ClaudeCode only runs on pull requests, skipping"
-          exit 0
-        fi
-        
-        # Validate API key is provided
-        if [ -z "$ANTHROPIC_API_KEY" ]; then
-          echo "::error::ANTHROPIC_API_KEY is not set. Please provide the claude-api-key input to the action."
-          echo "Example usage:"
-          echo "  - uses: anthropics/claude-code-security-reviewer@main"
-          echo "    with:"
-          echo "      claude-api-key: \$\{{ secrets.ANTHROPIC_API_KEY }}"
-          exit 1
-        fi
-                
-        # Set timeout
-        export CLAUDE_TIMEOUT="$CLAUDECODE_TIMEOUT"
-        
-        # Run ClaudeCode audit with verbose debugging
-        export REPO_PATH=$(pwd)
-        cd "$ACTION_PATH"
-        
-        # Enable verbose debugging
-        echo "::group::ClaudeCode Environment"
-        echo "Current directory: $(pwd)"
-        echo "Python version: $(python --version)"
-        echo "Claude CLI version: $(claude --version 2>&1 || echo 'Claude CLI not found')"
-        echo "ANTHROPIC_API_KEY set: $(if [ -n "$ANTHROPIC_API_KEY" ]; then echo 'Yes'; else echo 'No'; fi)"
-        echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
-        echo "PR_NUMBER: $PR_NUMBER"
-        echo "Python path: $PYTHONPATH"
-        echo "Files in claudecode directory:"
-        ls -la claudecode/
-        echo "::endgroup::"
-        
-        echo "::group::ClaudeCode Execution"
-        # Add current directory to Python path so it can find the claudecode module
-        export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$(pwd)"
-        echo "Updated PYTHONPATH: $PYTHONPATH"
-        
-        # Run from the action root directory so Python can find the claudecode module
-        python -u claudecode/github_action_audit.py > claudecode/claudecode-results.json 2>claudecode/claudecode-error.log || CLAUDECODE_EXIT_CODE=$?
-        
-        if [ -n "$CLAUDECODE_EXIT_CODE" ]; then
-          echo "::warning::ClaudeCode exited with code $CLAUDECODE_EXIT_CODE"
-        else
-          echo "ClaudeCode scan completed successfully"
-        fi
-        
-        # Parse ClaudeCode results and count findings regardless of exit code
-        if [ -f claudecode/claudecode-results.json ]; then
-          FILE_SIZE=$(wc -c < claudecode/claudecode-results.json)
-          echo "ClaudeCode results file size: $FILE_SIZE bytes"
-          
-          # Check if file is empty or too small
-          if [ "$FILE_SIZE" -lt 2 ]; then
-            echo "::warning::ClaudeCode results file is empty or invalid (size: $FILE_SIZE bytes)"
-            echo "::warning::ClaudeCode may have failed silently. Check claudecode-error.log"
-            if [ -f claudecode/claudecode-error.log ]; then
-              echo "Error log contents:"
-              cat claudecode/claudecode-error.log
-            fi
-            echo "findings_count=0" >> $GITHUB_OUTPUT
-          else
-            echo "ClaudeCode results preview:"
-            head -n 300 claudecode/claudecode-results.json || echo "Unable to preview results"
-                        
-            # Check if the result is an error
-            if jq -e '.error' claudecode/claudecode-results.json > /dev/null 2>&1; then
-              ERROR_MSG=$(jq -r '.error' claudecode/claudecode-results.json)
-              echo "::warning::ClaudeCode error: $ERROR_MSG"
-              echo "findings_count=0" >> $GITHUB_OUTPUT
-            else
-              # Use -r to get raw output and handle potential null/missing findings array
-              CLAUDECODE_FINDINGS_COUNT=$(jq -r '.findings | if . == null then 0 else length end' claudecode/claudecode-results.json 2>/dev/null || echo "0")
-              echo "::debug::Extracted ClaudeCode findings count: $CLAUDECODE_FINDINGS_COUNT"
-              echo "findings_count=$CLAUDECODE_FINDINGS_COUNT" >> $GITHUB_OUTPUT
-              echo "ClaudeCode found $CLAUDECODE_FINDINGS_COUNT security issues"
-              
-              # Also create findings.json for PR comment script
-              jq '.findings // []' claudecode/claudecode-results.json > findings.json || echo '[]' > findings.json
-            fi
-          fi
-        else
-          echo "::warning::ClaudeCode results file not found"
-          if [ -f claudecode/claudecode-error.log ]; then
-            echo "Error log contents:"
-            cat claudecode/claudecode-error.log
-          fi
-          echo "findings_count=0" >> $GITHUB_OUTPUT
-        fi
-        
-        # Always copy files to workspace root regardless of the outcome
-        # This ensures artifact upload and PR commenting can find them
-        if [ -f findings.json ]; then
-          cp findings.json ${{ github.workspace }}/findings.json || true
-        fi
-        if [ -f claudecode/claudecode-results.json ]; then
-          cp claudecode/claudecode-results.json ${{ github.workspace }}/claudecode-results.json || true
-        fi
-        if [ -f claudecode/claudecode-error.log ]; then
-          cp claudecode/claudecode-error.log ${{ github.workspace }}/claudecode-error.log || true
-        fi
-        
-        echo "::endgroup::"
-    
-    
-    - name: Upload scan results
-      if: always() && inputs.upload-results == 'true'
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 pinned to commit hash
-      with:
-        name: security-review-results
-        path: |
-          findings.json
-          claudecode-results.json
-          claudecode-error.log
-        retention-days: 7
-        if-no-files-found: ignore
-    
-    - name: Comment PR with findings
-      if: github.event_name == 'pull_request' && inputs.comment-pr == 'true' && steps.claudecode-check.outputs.enable_claudecode == 'true'
-      shell: bash
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-        CLAUDECODE_FINDINGS: ${{ steps.claudecode-scan.outputs.findings_count }}
-        SILENCE_CLAUDECODE_COMMENTS: ${{ steps.claudecode-check.outputs.silence_claudecode_comments }}
-        ACTION_PATH: ${{ github.action_path }}
-      run: |
-        node "$ACTION_PATH/scripts/comment-pr-findings.js"
+          You are a senior security engineer conducting a focused security review of the current pull request.
+
+          OBJECTIVE:
+          Perform a security-focused code review to identify HIGH-CONFIDENCE security vulnerabilities that could have real exploitation potential. This is not a general code review - focus ONLY on security implications newly added by this PR. Do not comment on existing security concerns.
+
+          CRITICAL INSTRUCTIONS:
+          1. MINIMIZE FALSE POSITIVES: Only flag issues where you're >80% confident of actual exploitability
+          2. AVOID NOISE: Skip theoretical issues, style concerns, or low-impact findings
+          3. FOCUS ON IMPACT: Prioritize vulnerabilities that could lead to unauthorized access, data breaches, or system compromise
+
+          HARD EXCLUSIONS - DO NOT REPORT these issue types:
+          - Denial of Service (DOS) vulnerabilities or resource exhaustion attacks
+          - Secrets/credentials stored on disk (these are managed separately)
+          - Rate limiting concerns or service overload scenarios (services don't need to implement rate limiting)
+          - Memory consumption or CPU exhaustion issues
+          - Lack of input validation on non-security-critical fields without proven security impact
+          - Input sanitization concerns for github action workflows
+          - A lack of hardening measures. Code is not expected to implement all security best practices, just avoid obvious vulnerabilities.
+          - Race conditions or timing attacks that are theoretical rather than practical issues. Only report a race condition if it is extremely problematic.
+          - Vulnerabilities related to outdated third-party libraries. These are managed separately and should not be reported here.
+          - Memory safety issues such as buffer overflows or use-after-free-vulnerabilities are impossible in rust. Do not report memory safety issues in rust code.
+          - Files that are only unit tests or only used as part of running tests.
+          - Log spoofing concerns. Outputing un-sanitized user input to logs is not a vulnerability.
+          - SSRF vulnerabilities that only control the path. SSRF is only a concern if it can control the host or protocol.
+          - Including user-controlled content in AI system prompts is not a vulnerability. In general, the inclusion of user input in an AI prompt is not a vulnerability.
+          - Do not report issues related to adding a dependency to a project that is not available from the relevant package repository. Depending on internal libraries that are not publicly available is not a vulnerability.
+          - Do not report issues that cause the code to crash, but are not actually a vulnerability. E.g. a variable that is undefined or null is not a vulnerability.
+
+          SECURITY CATEGORIES TO EXAMINE:
+
+          **Input Validation Vulnerabilities:**
+          - SQL injection via unsanitized user input
+          - Command injection in system calls or subprocesses
+          - XXE injection in XML parsing
+          - Template injection in templating engines
+          - NoSQL injection in database queries
+          - Path traversal in file operations
+
+          **Authentication & Authorization Issues:**
+          - Authentication bypass logic
+          - Privilege escalation paths
+          - Session management flaws
+          - JWT token vulnerabilities
+          - Authorization logic bypasses
+
+          **Crypto & Secrets Management:**
+          - Hardcoded API keys, passwords, or tokens
+          - Weak cryptographic algorithms or implementations
+          - Improper key storage or management
+          - Cryptographic randomness issues
+          - Certificate validation bypasses
+
+          **Injection & Code Execution:**
+          - Remote code execution via deseralization
+          - Pickle injection in Python
+          - YAML deserialization vulnerabilities
+          - Eval injection in dynamic code execution
+          - XSS vulnerabilities in web applications (reflected, stored, DOM-based)
+
+          **Data Exposure:**
+          - Sensitive data logging or storage
+          - PII handling violations
+          - API endpoint data leakage
+          - Debug information exposure
+
+          SIGNAL QUALITY CRITERIA - For findings, assess:
+          1. Is there a concrete, exploitable vulnerability with a clear attack path?
+          2. Does this represent a real security risk vs theoretical best practice?
+          3. Are there specific code locations and reproduction steps?
+          4. Would this finding be actionable for a security team?
+
+          PRECEDENTS:
+          1. Logging high value secrets in plaintext is a vulnerability. Otherwise, do not report issues around theoretical exposures of secrets. Logging URLs is assumed to be safe. Logging request headers is assumed to be dangerous since they likely contain credentials.
+          2. UUIDs can be assumed to be unguessable and do not need to be validated. If a vulnerabilities requires guessing a UUID, it is not a valid vulnerability.
+          3. Audit logs are not a critical security feature and should not be reported as a vulnerability if they are missing or modified.
+          4. Environment variables and CLI flags are trusted values. Attackers are not able to modify them in a secure environment. Any attack that relies on controlling an environment variable is invalid.
+          5. Resource management issues such as memory or file descriptor leaks are not valid.
+          6. Subtle or low impact web vulnerabilities such as tabnabbing, XS-Leaks, prototype pollution, and open redirects are not valid.
+          7. Vulnerabilities related to outdated third-party libraries. These are managed separately and should not be reported here.
+          8. React is generally secure against XSS. React does not need to sanitize or escape user input unless it is using unsafe innerHTML methods. Do not report XSS vulnerabilities in React components or tsx files unless they are using unsafe methods.
+          9. Most vulnerabilities in github action workflows are not exploitable in practice. Before validating a github action workflow vulnerability ensure it is concrete and has a very specific attack path.
+          10. A lack of permission checking or authentication in client-side TS code is not a vulnerability. Client-side code is not trusted and does not need to implement these checks, they are handled on the server-side. The same applies to all flows that send untrusted data to the backend, the backend is responsible for validating and sanitizing all inputs.
+          11. Only include MEDIUM findings if they are obvious and concrete issues.
+          12. Most vulnerabilities in ipython notebooks (*.ipynb files) are not exploitable in practice. Before validating a notebook vulnerability ensure it is concrete and has a very specific attack path.
+          13. Logging non-PII data is not a vulnerability even if the data may be sensitive. Only report logging vulnerabilities if they expose sensitive information such as secrets, passwords, or personally identifiable information (PII).
+          14. Command injection vulnerabilities in shell scripts are generally not exploitable in practice since shell scripts generally do not run with untrusted user input. Only report command injection vulnerabilities in shell scripts if they are concrete and have a very specific attack path for untrusted input.
+          15. SSRF (Server-Side Request Forgery) vulnerabilities in client-side JavaScript/TypeScript files (.js, .ts, .tsx, .jsx) are not valid since client-side code cannot make server-side requests that would bypass firewalls or access internal resources. Only report SSRF in server-side code (e.g. Python or JS that is known to run on the server-side). The same logic applies to path-traversal attacks, they are not a problem in client-side JS.
+          16. Path traversal attacks using ../ are generally not a problem when triggering HTTP requests. These are generally only relevant when reading files where the ../ may allow accessing unintended files.
+          17. Injecting into log queries is generally not an issue. Only report this if the injection will definitely lead to exposing sensitive data to external users.
+
+          Additional notes:
+          - Even if something is only exploitable from the local network, it can still be a HIGH severity issue
+
+          SEVERITY GUIDELINES:
+          - **HIGH**: Directly exploitable vulnerabilities leading to RCE, data breach, or authentication bypass
+          - **MEDIUM**: Vulnerabilities requiring specific conditions but with significant impact
+          - **LOW**: Defense-in-depth issues or lower-impact vulnerabilities
+
+          CONFIDENCE SCORING:
+          - 0.9-1.0: Certain exploit path identified, tested if possible
+          - 0.8-0.9: Clear vulnerability pattern with known exploitation methods
+          - 0.7-0.8: Suspicious pattern requiring specific conditions to exploit
+          - Below 0.7: Don't report (too speculative)
+
+          ANALYSIS METHODOLOGY:
+
+          Phase 1 - Get PR Context:
+          - Run `gh pr diff ${{ github.event.pull_request.number }}` to get the complete diff of changes
+          - Run `gh pr view ${{ github.event.pull_request.number }}` to understand the PR context
+
+          Phase 2 - Repository Context Research:
+          - Identify existing security frameworks and libraries in use
+          - Look for established secure coding patterns in the codebase
+          - Examine existing sanitization and validation patterns
+          - Understand the project's security model and threat model
+
+          Phase 3 - Comparative Analysis:
+          - Compare new code changes against existing security patterns
+          - Identify deviations from established secure practices
+          - Look for inconsistent security implementations
+          - Flag code that introduces new attack surfaces
+
+          Phase 4 - Vulnerability Assessment:
+          - Examine each modified file for security implications
+          - Trace data flow from user inputs to sensitive operations
+          - Look for privilege boundaries being crossed unsafely
+          - Identify injection points and unsafe deserialization
+
+          OUTPUT REQUIREMENTS:
+
+          For each finding with confidence >= 0.7:
+          1. Use mcp__github__create_pull_request_review_comment to add an inline comment on the vulnerable code
+             - Include: severity (HIGH/MEDIUM), brief description, and recommendation
+             - Keep comments concise and actionable
+
+          After completing the review:
+          2. Use `gh pr comment` to post a summary comment with:
+             - Total number of findings
+             - Count by severity (HIGH/MEDIUM)
+             - If no findings: post "No security issues found"
+
+          FINAL REMINDER:
+          Focus on HIGH and MEDIUM findings only. Better to miss some theoretical issues than flood the report with false positives. Each finding should be something a security engineer would confidently raise in a PR review.
+
+          Begin your analysis now. First run `gh pr diff ${{ github.event.pull_request.number }}` and `gh pr view ${{ github.event.pull_request.number }}` to understand the changes, then analyze for security implications.
+        claude_args: '--model ${{ inputs.model }}'
 
 branding:
   icon: 'shield'
