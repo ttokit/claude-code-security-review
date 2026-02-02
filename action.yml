@@ -18,7 +18,6 @@ runs:
       uses: anthropics/claude-code-action@v1
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
-        allowed_tools: "mcp__github__create_pull_request_review_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Read,Glob,Grep,LS,Task"
         prompt: |
           REPO: ${{ github.repository }}
           PR NUMBER: ${{ github.event.pull_request.number }}
@@ -168,7 +167,9 @@ runs:
           Focus on HIGH and MEDIUM findings only. Better to miss some theoretical issues than flood the report with false positives. Each finding should be something a security engineer would confidently raise in a PR review.
 
           Begin your analysis now. First run `gh pr diff ${{ github.event.pull_request.number }}` and `gh pr view ${{ github.event.pull_request.number }}` to understand the changes, then analyze for security implications.
-        claude_args: '--model ${{ inputs.model }}'
+        claude_args: |
+          --model ${{ inputs.model }}
+          --allowedTools mcp__github__create_pull_request_review_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr comment:*),Read,Glob,Grep,LS,Task
 
 branding:
   icon: 'shield'
