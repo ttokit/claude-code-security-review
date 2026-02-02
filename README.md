@@ -16,6 +16,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  id-token: write  # Required for OIDC authentication
 
 jobs:
   security-review:
@@ -23,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ttokit/claude-code-security-review@oauth-v1.0.0
+      - uses: ttokit/claude-code-security-review@oauth-v1.0.1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -40,7 +41,7 @@ jobs:
 If you have a Pro subscription and want to use Sonnet for cost efficiency:
 
 ```yaml
-- uses: ttokit/claude-code-security-review@oauth-v1.0.0
+- uses: ttokit/claude-code-security-review@oauth-v1.0.1
   with:
     claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
     model: claude-sonnet-4-5-20250929
@@ -55,7 +56,7 @@ This action is not hardened against prompt injection attacks and should only be 
 For enhanced security, pin the action to a specific commit SHA instead of a tag:
 
 ```yaml
-- uses: ttokit/claude-code-security-review@<COMMIT_SHA>  # oauth-v1.0.0
+- uses: ttokit/claude-code-security-review@<COMMIT_SHA>  # oauth-v1.0.1
   with:
     claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -63,10 +64,10 @@ For enhanced security, pin the action to a specific commit SHA instead of a tag:
 To get the SHA for a tag:
 
 ```bash
-git ls-remote https://github.com/ttokit/claude-code-security-review.git refs/tags/oauth-v1.0.0
+git ls-remote https://github.com/ttokit/claude-code-security-review.git refs/tags/oauth-v1.0.1
 ```
 
-The trailing comment `# oauth-v1.0.0` enables Dependabot to detect version updates and create PRs automatically.
+The trailing comment `# oauth-v1.0.1` enables Dependabot to detect version updates and create PRs automatically.
 
 ## License
 
