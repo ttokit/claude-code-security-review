@@ -19,7 +19,7 @@ action.yml                           # メインアクション定義
 ### 入力パラメータ
 
 - `claude_code_oauth_token`: Claude Code の OAuth トークン（必須）
-- `model`: 使用する Claude モデル（デフォルト: Opus 4.5）
+- `model`: 使用する Claude モデル（デフォルト: Opus 4.6）
 
 ### 許可ツール
 
@@ -50,5 +50,6 @@ action.yml                           # メインアクション定義
 
 ## 開発ガイドライン
 
+- コミットメッセージは英語で記述（グローバル設定の日本語ルールを上書き）
 - プロンプト変更時は既存の精度を維持するよう注意
 - 新しい除外パターン追加時は HARD EXCLUSIONS または PRECEDENTS に追記
