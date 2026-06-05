@@ -19,7 +19,7 @@ action.yml                           # メインアクション定義
 ### 入力パラメータ
 
 - `claude_code_oauth_token`: Claude Code の OAuth トークン（必須）
-- `model`: 使用する Claude モデル（デフォルト: Opus 4.6）
+- `model`: 使用する Claude モデル（デフォルト: Opus 4.8）
 
 ### 許可ツール
 

@@ -7,9 +7,9 @@ inputs:
     description: 'Claude Code OAuth token from GitHub secrets'
     required: true
   model:
-    description: 'Claude model to use (default: claude-opus-4-6)'
+    description: 'Claude model to use (default: claude-opus-4-8)'
     required: false
-    default: 'claude-opus-4-6'
+    default: 'claude-opus-4-8'
 
 runs:
   using: 'composite'
